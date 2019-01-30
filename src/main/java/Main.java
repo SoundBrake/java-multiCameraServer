@@ -29,6 +29,7 @@ import edu.wpi.first.vision.VisionThread;
 import edu.wpi.first.wpilibj.tables.ITable;
 
 import org.opencv.core.Mat;
+import org.opencv.core.Rect;
 import org.opencv.imgproc.Imgproc;
 
 import edu.wpi.cscore.CvSink;
@@ -74,6 +75,8 @@ import edu.wpi.cscore.HttpCamera;
 
 public final class Main {
   private static String configFile = "/boot/frc.json";
+  private static double centerX = 0.0;
+  private static Thread visionThread;
 
   @SuppressWarnings("MemberName")
   public static class CameraConfig {
@@ -212,9 +215,15 @@ public final class Main {
   public static class MyPipeline implements VisionPipeline {
     public int val;
 
+    private YellowBallGripPipeline pipeline = new YellowBallGripPipeline();
+
     @Override
     public void process(Mat mat) {
-      val += 1;
+      pipeline.process(mat);
+    }
+
+    public YellowBallGripPipeline getPipeLine(){
+      return pipeline;
     }
   }
 
@@ -241,38 +250,56 @@ public final class Main {
       ntinst.startClientTeam(team);
     }
 
-    // start cameras
+      // start cameras
     List<VideoSource> cameras = new ArrayList<>();
-    for (CameraConfig cameraConfig : cameraConfigs) {
-      cameras.add(startCamera(cameraConfig));
+    for (CameraConfig cameraConfig : cameraConfigs) {      
+      VideoSource cam= startCamera(cameraConfig);
+     // cameras.add(startCamera(cameraConfig));
+     cameras.add(cam);
 
 
-      CvSink cvSink = CameraServer.getInstance().getVideo();
-      CvSource outputStream = CameraServer.getInstance().putVideo(cameraConfig.name, 160, 120);
+      // CvSink cvSink = CameraServer.getInstance().getVideo();
+      // CvSource outputStream = CameraServer.getInstance().putVideo(cameraConfig.name, cam.getVideoMode().width, cam.getVideoMode().height);
                 
-      Mat source = new Mat();
-      Mat output = new Mat();
+      // Mat source = new Mat();
+      // Mat output = new Mat();
                 
-            while(!Thread.interrupted()) {
-                    cvSink.grabFrame(source);
-                    if(!source.empty()){
-                    Imgproc.cvtColor(source, output, Imgproc.COLOR_BGR2RGB);
-                    outputStream.putFrame(output);                    
-                    }
-            }
+      //       while(!Thread.interrupted()) {                    
+      //               cvSink.grabFrame(source);
+      //               if(!source.empty()){
+      //               //Imgproc.cvtColor(source, output, Imgproc.COLOR_BGR2RGB);
+      //               outputStream.putFrame(output);   
+      //               }
+      //       }  
+      
+      
 
-
-    }
-
+     
+    }    
+    
     // start image processing on camera 0 if present
+    final Object imgLock = new Object();
     if (cameras.size() >= 1) {
+      System.out.println("Start handling pipeline");
+      initDefaultVision(cameras.get(0));
       VisionThread visionThread = new VisionThread(cameras.get(0),
               new MyPipeline(), pipeline -> {
         // do something with pipeline results
+       
+        if (!pipeline.getPipeLine().filterContoursOutput().isEmpty()) {
+          System.out.println("getting Imgproc.boundingRect");
+          Rect r = Imgproc.boundingRect(pipeline.getPipeLine().filterContoursOutput().get(0));
+          synchronized (imgLock) {
+              centerX = r.x + (r.width / 2);
+              ntinst.getTable("SmartDashboard").getEntry("CenterX").setNumber(centerX);
+          }
+      }
+        
       });
       /* something like this for GRIP:
       VisionThread visionThread = new VisionThread(cameras.get(0),
               new GripPipeline(), pipeline -> {
+
         ...
       });
        */
@@ -287,6 +314,44 @@ public final class Main {
         return;
       }
     }
+  }
+
+
+  public static void initDefaultVision(VideoSource cam) {
+  	visionThread = new Thread(() -> {
+	// Get the UsbCamera from CameraServer
+	//UsbCamera camera = CameraServer.getInstance().startAutomaticCapture();
+	// Set the resolution
+	//camera.setResolution(640, 480);
+
+	// Get a CvSink. This will capture Mats from the camera
+	CvSink cvSink = CameraServer.getInstance().getVideo();
+	// Setup a CvSource. This will send images back to the Dashboard
+	CvSource outputStream = CameraServer.getInstance().putVideo(cam.getName(), cam.getVideoMode().width, cam.getVideoMode().height);
+
+	// Mats are very memory expensive. Lets reuse this Mat.
+	Mat mat = new Mat();
+
+	// This cannot be 'true'. The program will never exit if it is. This
+	// lets the robot stop this thread when restarting robot code or
+	// deploying.
+	while (!Thread.interrupted()) {
+		// Tell the CvSink to grab a frame from the camera and put it
+		// in the source mat.  If there is an error notify the output.
+		if (cvSink.grabFrame(mat) == 0) {
+			// Send the output the error.
+			outputStream.notifyError(cvSink.getError());
+			// skip the rest of the current iteration
+			continue;
+		}
+		// Put a rectangle on the image
+		//Imgproc.rectangle(mat, new Point(100, 100), new Point(400, 400),new Scalar(255, 255, 255), 5);
+		// Give the output stream a new image to display
+		outputStream.putFrame(mat);
+	}
+});
+visionThread.setDaemon(true);
+visionThread.start();
   }
 
  
